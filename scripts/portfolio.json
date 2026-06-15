@@ -1,0 +1,30 @@
+{
+  "settings": {
+    "risk_free_pct": 2.5,
+    "rebalance_tolerance_pts": 5,
+    "max_weight_pct": 60,
+    "lookback": "2y"
+  },
+  "assets": [
+    {
+      "id": "SEMI",
+      "name": "iShares MSCI Global Semiconductors",
+      "symbol": "SEMI.MI",
+      "isin": "IE000I8KRLL9",
+      "cls": "eq",
+      "target": 50
+    },
+    {
+      "id": "BTC",
+      "name": "Bitcoin",
+      "symbol": "BTC-EUR",
+      "isin": "",
+      "cls": "crypto",
+      "target": 50
+    }
+  ],
+  "transactions": [
+    { "date": "2026-06-05", "asset": "SEMI", "amount": 200.0, "fee": 1.0, "price": 17.544 },
+    { "date": "2026-06-05", "asset": "BTC", "amount": 199.97, "fee": 1.0, "price": 52085.47 }
+  ]
+}

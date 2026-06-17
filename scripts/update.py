@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Motor del sistema de cartera. Se ejecuta solo en GitHub Actions cada dia.
+"""
+
 import json, math, random, urllib.request, urllib.error, datetime, os, statistics
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -34,6 +38,18 @@ def yahoo_history(symbol, rng="2y"):
     except Exception as e:
         WARN.append(f"No se pudo descargar {symbol}: {e}")
         return None, None
+
+def yahoo_quote(symbol):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
+    try:
+        d = _get(url)
+        meta = d["chart"]["result"][0]["meta"]
+        p = meta.get("regularMarketPrice") or meta.get("chartPreviousClose")
+        cur = meta.get("currency", "EUR")
+        return (float(p), cur) if p else (None, None)
+    except Exception as e:
+        WARN.append(f"No se pudo obtener precio actual de {symbol}: {e}")
+        return (None, None)
 
 def yahoo_fundamentals(symbol):
     url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}?modules=summaryDetail,defaultKeyStatistics"
@@ -230,38 +246,51 @@ def main():
     rng = st.get("lookback", "2y")
     assets = cfg["assets"]
     txns = cfg["transactions"]
+
     prices_eur = {}
     last_price = {}
     fundamentals = {}
+
+    def to_eur_price(p, cur):
+        if p is None:
+            return None
+        if not cur or cur == "EUR":
+            return p
+        fx = fx_to_eur_series(cur)
+        if fx:
+            rate = fx[sorted(fx)[-1]]
+            return p * rate
+        return p
+
     for a in assets:
         series, cur = yahoo_history(a["symbol"], rng)
-        if not series:
+        cur_price = None
+        if a.get("price_symbol"):
+            pq, pcur = yahoo_quote(a["price_symbol"])
+            cur_price = to_eur_price(pq, pcur)
+        if cur_price is None and series:
+            cur_price = to_eur_price(series[-1][1], cur)
+        if cur_price is None:
             buys = [t for t in txns if t["asset"] == a["id"]]
             if buys:
-                last_price[a["id"]] = buys[-1]["price"]
-                WARN.append(f"{a['name']}: sin datos de mercado; uso ultimo precio de compra ({buys[-1]['price']}).")
-            continue
-        if cur and cur != "EUR":
-            fx = fx_to_eur_series(cur)
-            if fx:
-                conv, lastfx = [], None
-                for day, p in series:
-                    if day in fx:
-                        lastfx = fx[day]
-                    if lastfx:
-                        conv.append((day, p * lastfx))
-                series = conv or series
-        prices_eur[a["id"]] = series
-        last_price[a["id"]] = series[-1][1]
-        ytd = None
-        yr = datetime.date.today().year
-        first = next((p for d, p in series if d >= f"{yr}-01-01"), None)
-        if first and series[-1][1]:
-            ytd = round((series[-1][1] / first - 1) * 100, 1)
-        pe, dy = (None, None)
-        if a.get("cls") != "crypto":
-            pe, dy = yahoo_fundamentals(a["symbol"])
-        fundamentals[a["id"]] = {"pe": pe, "ytd": ytd, "dy": dy}
+                cur_price = buys[-1]["price"]
+                WARN.append(f"{a['name']}: sin precio de mercado; uso ultimo precio de compra ({cur_price}).")
+        if cur_price is not None:
+            last_price[a["id"]] = cur_price
+        if series:
+            prices_eur[a["id"]] = series
+            ytd = None
+            yr = datetime.date.today().year
+            first = next((p for d, p in series if d >= f"{yr}-01-01"), None)
+            if first and series[-1][1]:
+                ytd = round((series[-1][1] / first - 1) * 100, 1)
+            pe, dy = (None, None)
+            if a.get("cls") != "crypto":
+                pe, dy = yahoo_fundamentals(a.get("price_symbol") or a["symbol"])
+            fundamentals[a["id"]] = {"pe": pe, "ytd": ytd, "dy": dy}
+        else:
+            fundamentals[a["id"]] = {"pe": None, "ytd": None, "dy": None}
+
     holdings = []
     total_val = total_inv = 0.0
     for a in assets:
@@ -279,21 +308,25 @@ def main():
     for h in holdings:
         h["weight"] = round(h["value"] / total_val * 100, 1) if total_val else 0
         h["drift"] = round(h["weight"] - h["target"], 1)
+
     weights = {h["id"]: (h["value"] / total_val if total_val else 0) for h in holdings}
+
     rets_by_id = {i: returns(prices_eur[i]) for i in prices_eur}
     ids = [i for i in rets_by_id if len(rets_by_id[i]) >= 8]
     port = portfolio_series(rets_by_id, weights)
     metrics = risk_metrics(port, rf)
+
     correlations = {"ids": [], "matrix": []}
+    risk_contrib = {}
     frontier = None
     if len(ids) >= 1:
         mu_ann, cov, corr, ncommon = cov_matrix(rets_by_id, ids)
         correlations = {"ids": ids, "matrix": [[corr[a][b] for b in ids] for a in ids], "n": ncommon}
-        rc = risk_contributions(ids, weights, cov)
+        risk_contrib = risk_contributions(ids, weights, cov)
         for h in holdings:
             if h["id"] in ids:
                 h["ann_vol"] = round(math.sqrt(cov[h["id"]][h["id"]]) * 100, 1)
-                h["risk_contrib"] = rc.get(h["id"], 0)
+                h["risk_contrib"] = risk_contrib.get(h["id"], 0)
         if len(ids) >= 2:
             frontier = efficient_frontier(ids, mu_ann, cov, cap, rf)
             def pt(wmap):
@@ -305,15 +338,18 @@ def main():
             frontier["current"] = pt(weights)
             frontier["target"] = pt(twmap)
             frontier["assets"] = [{"id": i, "vol": round(math.sqrt(cov[i][i]) * 100, 1), "ret": round(mu_ann[i] * 100, 1)} for i in ids]
+
     idx, v = [], 100.0
     for day, r in port:
         v *= (1 + r)
         idx.append({"date": day, "index": round(v, 2)})
+
     cfs = [(datetime.date.fromisoformat(t["date"]), -t["amount"]) for t in txns]
     cfs.sort()
     if total_val > 0:
         cfs.append((datetime.date.today(), total_val))
     tir = xirr(cfs)
+
     opportunities = []
     if frontier and ids:
         mu_ann2, cov2, _, _ = cov_matrix(rets_by_id, ids)
@@ -321,7 +357,16 @@ def main():
         for a in assets:
             f = fundamentals.get(a["id"], {})
             pe = f.get("pe")
-            bucket = "s/d" if pe is None else ("barato" if pe < 15 else "razonable" if pe < 25 else "exigente" if pe < 35 else "caro")
+            if pe is None:
+                bucket = "s/d"
+            elif pe < 15:
+                bucket = "barato"
+            elif pe < 25:
+                bucket = "razonable"
+            elif pe < 35:
+                bucket = "exigente"
+            else:
+                bucket = "caro"
             avg_corr = None
             if a["id"] in ids and base:
                 tt = sum(b.get("target", 0) for b in base) or 1
@@ -332,6 +377,7 @@ def main():
                     avg_corr += (b.get("target", 0) / tt) * c
                 avg_corr = round(avg_corr, 2)
             opportunities.append({"id": a["id"], "name": a["name"], "pe": pe, "ytd": f.get("ytd"), "bucket": bucket, "avg_corr": avg_corr})
+
     out = {
         "updated": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "currency": "EUR",

@@ -10,6 +10,7 @@
       "id": "SEMI",
       "name": "iShares MSCI Global Semiconductors",
       "symbol": "SEMI.AS",
+      "price_symbol": "IE000I8KRLL9.SG",
       "isin": "IE000I8KRLL9",
       "cls": "eq",
       "target": 50

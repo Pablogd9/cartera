@@ -599,7 +599,7 @@ function render(d) {
       options:{interaction:{mode:'index',intersect:false},plugins:{
         legend:{display:false},
         tooltip:{callbacks:{
-          title:items=>{const d=new Date(items[0].label); return d.toLocaleDateString('es-ES',{day:'2-digit',month:'short',year:'numeric'});},
+          title:items=>{const p=items[0].label.split('-');return p[2]+'/'+p[1]+'/'+p[0];},
           label:c=>c.dataset.label+': '+eur(c.parsed.y),
           afterBody:items=>{
             const val=items.find(i=>i.dataset.label==='Valor cartera');
@@ -614,7 +614,7 @@ function render(d) {
   } else if (d.index && d.index.length > 1) {
     chartReal = new Chart(document.getElementById('chartReal'), {type:'line',
       data:{labels:d.index.map(x=>x.date),datasets:[{label:'Índice (base 100)',data:d.index.map(x=>x.index),borderColor:C.blue,backgroundColor:'rgba(91,140,255,.08)',fill:true,borderWidth:2,pointRadius:0,tension:.2}]},
-      options:{interaction:{mode:'index',intersect:false},plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label,label:c=>c.parsed.y.toFixed(1)},backgroundColor:'#1A2235',borderColor:'#1F2D4A',borderWidth:1,padding:10,titleColor:'#E8EDF8',bodyColor:'#7A8BAE'}},
+      options:{interaction:{mode:'index',intersect:false},plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>{const p=i[0].label.split('-');return p[2]+'/'+p[1]+'/'+p[0];},label:c=>c.parsed.y.toFixed(1)},backgroundColor:'#1A2235',borderColor:'#1F2D4A',borderWidth:1,padding:10,titleColor:'#E8EDF8',bodyColor:'#7A8BAE'}},
       scales:{x:{ticks:{maxTicksLimit:6,font:{size:10}},grid:{display:false}},y:{grid:{color:C.line}}}}});
   }
 
@@ -669,7 +669,7 @@ function render(d) {
       options:{interaction:{mode:'index',intersect:false},plugins:{
         legend:{display:false},
         tooltip:{callbacks:{
-          title:i=>{const d=new Date(i[0].label); return d.toLocaleDateString('es-ES',{day:'2-digit',month:'short',year:'numeric'});},
+          title:i=>{const p=i[0].label.split('-');return p[2]+'/'+p[1]+'/'+p[0];},
           label:c=>'Índice: '+c.parsed.y.toFixed(1),
           afterBody:i=>{const v=i[0].parsed.y; return ['Rent. equiv.: '+(v>=100?'+':'')+((v-100)).toFixed(1)+'%'];}
         },backgroundColor:'#1A2235',borderColor:'#1F2D4A',borderWidth:1,padding:10,titleColor:'#E8EDF8',bodyColor:'#7A8BAE',titleFont:{family:"'SF Mono',monospace",size:11}}

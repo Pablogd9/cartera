@@ -102,6 +102,8 @@ canvas{max-width:100%}
   <button class="nav-tab" onclick="showTab('historico')">Histórico</button>
   <button class="nav-tab" onclick="showTab('anadir')">Añadir</button>
   <button class="nav-tab" onclick="showTab('simulador')">Simulador</button>
+  <div style="flex:1"></div>
+  <button onclick="refreshData()" id="btnRefresh" style="background:none;border:1px solid var(--line);border-radius:8px;padding:6px 14px;color:var(--mut);font-size:11px;font-family:var(--font);cursor:pointer;margin:8px 0;transition:all .2s" onmouseover="this.style.borderColor='var(--gold)';this.style.color='var(--gold)'" onmouseout="this.style.borderColor='var(--line)';this.style.color='var(--mut)'">↻ Actualizar</button>
 </nav>
 
 <!-- ═══════════════════════════ MI CARTERA ═══════════════════════════ -->
@@ -584,18 +586,36 @@ function render(d) {
   document.getElementById('c_pnlp').style.color = pnlCol;
   document.getElementById('c_xirr').textContent = t.xirr!=null ? pct(t.xirr) : '—';
 
-  // gráfico real (valor en € desde primera compra)
-  if (d.real_index && d.real_index.length > 1) {
-    if (chartReal) chartReal.destroy();
+  // gráfico real (valor en € desde primera compra) - con tooltip interactivo
+  const realData = d.real_index && d.real_index.length > 1 ? d.real_index : null;
+  if (chartReal) chartReal.destroy();
+  if (realData) {
+    const invested = d.totals.invested || 0;
     chartReal = new Chart(document.getElementById('chartReal'), {type:'line',
-      data:{labels:d.real_index.map(x=>x.date),datasets:[{data:d.real_index.map(x=>x.value),borderColor:C.up,backgroundColor:'rgba(41,181,168,.10)',fill:true,borderWidth:2,pointRadius:0,tension:.15}]},
-      options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>eur(c.parsed.y)}}},scales:{x:{ticks:{maxTicksLimit:6},grid:{display:false}},y:{grid:{color:C.line},ticks:{callback:v=>'€'+v}}}}});
+      data:{labels:realData.map(x=>x.date),datasets:[
+        {label:'Valor cartera',data:realData.map(x=>x.value),borderColor:C.up,backgroundColor:'rgba(41,181,168,.08)',fill:true,borderWidth:2,pointRadius:0,tension:.2},
+        {label:'Invertido',data:realData.map(()=>invested),borderColor:C.dim,borderDash:[4,4],borderWidth:1,pointRadius:0,fill:false}
+      ]},
+      options:{interaction:{mode:'index',intersect:false},plugins:{
+        legend:{display:false},
+        tooltip:{callbacks:{
+          title:items=>{const d=new Date(items[0].label); return d.toLocaleDateString('es-ES',{day:'2-digit',month:'short',year:'numeric'});},
+          label:c=>c.dataset.label+': '+eur(c.parsed.y),
+          afterBody:items=>{
+            const val=items.find(i=>i.dataset.label==='Valor cartera');
+            if(val&&invested){const pnl=val.parsed.y-invested; return ['P&L: '+(pnl>=0?'+':'')+eur(pnl)+' ('+(pnl>=0?'+':'')+((pnl/invested)*100).toFixed(1)+'%)'];}
+            return [];
+          }
+        },backgroundColor:'#1A2235',borderColor:'#1F2D4A',borderWidth:1,padding:10,titleColor:'#E8EDF8',bodyColor:'#7A8BAE',titleFont:{family:"'SF Mono',monospace",size:11}}
+      },scales:{
+        x:{ticks:{maxTicksLimit:6,font:{size:10}},grid:{display:false}},
+        y:{grid:{color:C.line},ticks:{callback:v=>eur(v),font:{size:10}}}
+      }}});
   } else if (d.index && d.index.length > 1) {
-    // fallback: base 100 desde primera fecha del historico
-    if (chartReal) chartReal.destroy();
     chartReal = new Chart(document.getElementById('chartReal'), {type:'line',
-      data:{labels:d.index.map(x=>x.date),datasets:[{data:d.index.map(x=>x.index),borderColor:C.blue,backgroundColor:'rgba(91,140,255,.10)',fill:true,borderWidth:2,pointRadius:0,tension:.15}]},
-      options:{plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:6},grid:{display:false}},y:{grid:{color:C.line}}}}});
+      data:{labels:d.index.map(x=>x.date),datasets:[{label:'Índice (base 100)',data:d.index.map(x=>x.index),borderColor:C.blue,backgroundColor:'rgba(91,140,255,.08)',fill:true,borderWidth:2,pointRadius:0,tension:.2}]},
+      options:{interaction:{mode:'index',intersect:false},plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label,label:c=>c.parsed.y.toFixed(1)},backgroundColor:'#1A2235',borderColor:'#1F2D4A',borderWidth:1,padding:10,titleColor:'#E8EDF8',bodyColor:'#7A8BAE'}},
+      scales:{x:{ticks:{maxTicksLimit:6,font:{size:10}},grid:{display:false}},y:{grid:{color:C.line}}}}});
   }
 
   // posiciones
@@ -645,8 +665,16 @@ function render(d) {
   if (d.index && d.index.length > 1) {
     if (chartIdx) chartIdx.destroy();
     chartIdx = new Chart(document.getElementById('chartIdx'), {type:'line',
-      data:{labels:d.index.map(x=>x.date),datasets:[{data:d.index.map(x=>x.index),borderColor:C.up,backgroundColor:'rgba(41,181,168,.10)',fill:true,borderWidth:2,pointRadius:0,tension:.15}]},
-      options:{plugins:{legend:{display:false}},scales:{x:{ticks:{maxTicksLimit:7},grid:{display:false}},y:{grid:{color:C.line}}}}});
+      data:{labels:d.index.map(x=>x.date),datasets:[{label:'Índice',data:d.index.map(x=>x.index),borderColor:C.up,backgroundColor:'rgba(41,181,168,.08)',fill:true,borderWidth:2,pointRadius:0,tension:.2}]},
+      options:{interaction:{mode:'index',intersect:false},plugins:{
+        legend:{display:false},
+        tooltip:{callbacks:{
+          title:i=>{const d=new Date(i[0].label); return d.toLocaleDateString('es-ES',{day:'2-digit',month:'short',year:'numeric'});},
+          label:c=>'Índice: '+c.parsed.y.toFixed(1),
+          afterBody:i=>{const v=i[0].parsed.y; return ['Rent. equiv.: '+(v>=100?'+':'')+((v-100)).toFixed(1)+'%'];}
+        },backgroundColor:'#1A2235',borderColor:'#1F2D4A',borderWidth:1,padding:10,titleColor:'#E8EDF8',bodyColor:'#7A8BAE',titleFont:{family:"'SF Mono',monospace",size:11}}
+      },scales:{x:{ticks:{maxTicksLimit:7,font:{size:10}},grid:{display:false}},y:{grid:{color:C.line},ticks:{font:{size:10}}}}
+      }});
   }
 
   // riesgo vs capital
@@ -728,6 +756,24 @@ function render(d) {
 }
 
 // ═══════════════════════════════ INIT ════════════════════════════════
+async function refreshData() {
+  const btn = document.getElementById('btnRefresh');
+  btn.textContent = '↻ Actualizando…';
+  btn.style.color = 'var(--gold)';
+  try {
+    const r = await fetch('./data/output.json?t='+Date.now());
+    const d = await r.json();
+    render(d);
+    btn.textContent = '✓ Actualizado';
+    btn.style.color = 'var(--up)';
+    setTimeout(()=>{ btn.textContent='↻ Actualizar'; btn.style.color='var(--mut)'; }, 2000);
+  } catch(e) {
+    btn.textContent = '✗ Error';
+    btn.style.color = 'var(--down)';
+    setTimeout(()=>{ btn.textContent='↻ Actualizar'; btn.style.color='var(--mut)'; }, 2000);
+  }
+}
+
 async function init() {
   // cargar output.json
   try {

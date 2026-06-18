@@ -1,6 +1,6 @@
 {
   "settings": {
-    "risk_free_pct": 2.6,
+    "risk_free_pct": 2.5,
     "rebalance_tolerance_pts": 5,
     "max_weight_pct": 60,
     "lookback": "2y"

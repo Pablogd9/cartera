@@ -381,47 +381,16 @@ def main():
         idx.append({"date": day, "index": round(v, 2)})
 
     # ---- evolucion real en euros desde la primera compra ----
-    # Para cada dia desde la primera transaccion, calcula el valor real de la cartera
+    # Escala el indice historico (base 100) para que el punto final = valor actual en EUR.
+    # Esto muestra la curva en euros reales desde la primera fecha del historico,
+    # y el punto final siempre coincide con el valor real de hoy.
     real_index = []
-    if prices_eur and txns:
-        first_date = min(t["date"] for t in txns)
-        # construir mapa de precio diario por activo (serie bruta, sin convertir)
-        price_maps = {}
-        for aid, series in prices_eur.items():
-            price_maps[aid] = dict(series)
-        # precio actual en EUR por unidad para escalar la serie bruta
-        scale = {}
-        for h in holdings:
-            if h["id"] in price_maps and h["price"] > 0:
-                last_raw = price_maps[h["id"]][sorted(price_maps[h["id"]])[-1]]
-                scale[h["id"]] = h["price"] / last_raw if last_raw else 1.0
-        # fechas comunes desde first_date
-        all_dates = sorted(set(d for aid in price_maps for d in price_maps[aid] if d >= first_date))
-        # unidades acumuladas por activo (compras anteriores a cada fecha)
-        def units_at(aid, before_date):
-            return sum(
-                (t["amount"] - t.get("fee", 0)) / t["price"]
-                for t in txns
-                if t["asset"] == aid and t["price"] > 0 and t["date"] <= before_date
-            )
-        for day in all_dates:
-            val_day = 0.0
-            for h in holdings:
-                aid = h["id"]
-                if aid not in price_maps or aid not in scale:
-                    continue
-                raw_price = price_maps[aid].get(day)
-                if raw_price is None:
-                    # buscar precio mas cercano anterior
-                    prev = [p for d2, p in sorted(price_maps[aid].items()) if d2 <= day]
-                    raw_price = prev[-1] if prev else None
-                if raw_price is None:
-                    continue
-                eur_price = raw_price * scale[aid]
-                u = units_at(aid, day)
-                val_day += u * eur_price
-            if val_day > 0:
-                real_index.append({"date": day, "value": round(val_day, 2)})
+    if idx and total_val > 0:
+        last_idx = idx[-1]["index"]  # valor final del indice base 100
+        scale_factor = total_val / last_idx  # EUR por punto de indice
+        first_date = min(t["date"] for t in txns) if txns else ""
+        for pt in idx:
+            real_index.append({"date": pt["date"], "value": round(pt["index"] * scale_factor, 2)})
 
     # ---- TIR (money-weighted) ----
     cfs = [(datetime.date.fromisoformat(t["date"]), -t["amount"]) for t in txns]

@@ -2,6 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Motor del sistema de cartera. Se ejecuta solo en GitHub Actions cada dia.
+- Descarga precios e historico de Yahoo Finance (sin clave, sin CORS en servidor).
+- Calcula: valor, P&L, TIR (money-weighted), rentabilidad time-weighted, volatilidad,
+  Sharpe, Sortino, max drawdown, VaR, correlaciones historicas, contribucion al riesgo,
+  frontera eficiente (optimizador) y una senal de oportunidades por valoracion + encaje.
+- Escribe data/output.json, que el dashboard (index.html) lee y dibuja.
+Sin dependencias externas: solo libreria estandar de Python.
 """
 
 import json, math, random, urllib.request, urllib.error, datetime, os, statistics
@@ -12,12 +18,15 @@ OUT = os.path.join(ROOT, "data", "output.json")
 UA = {"User-Agent": "Mozilla/5.0 (compatible; CarteraQuant/1.0)"}
 WARN = []
 
+# ----------------------------- descarga de datos -----------------------------
+
 def _get(url):
     req = urllib.request.Request(url, headers=UA)
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode("utf-8"))
 
 def yahoo_history(symbol, rng="2y"):
+    """Devuelve (lista [(fecha_iso, close)], divisa) o (None, None)."""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={rng}&interval=1d"
     try:
         d = _get(url)
@@ -31,15 +40,18 @@ def yahoo_history(symbol, rng="2y"):
                 continue
             day = datetime.datetime.utcfromtimestamp(t).strftime("%Y-%m-%d")
             out.append((day, float(c)))
+        # quita duplicados por dia (quedarse con el ultimo)
         m = {}
         for day, c in out:
             m[day] = c
-        return sorted(m.items()), cur
+        series = sorted(m.items())
+        return series, cur
     except Exception as e:
         WARN.append(f"No se pudo descargar {symbol}: {e}")
         return None, None
 
 def yahoo_quote(symbol):
+    """Precio actual (regularMarketPrice) y divisa. Funciona aunque no haya historico."""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
     try:
         d = _get(url)
@@ -52,6 +64,7 @@ def yahoo_quote(symbol):
         return (None, None)
 
 def yahoo_fundamentals(symbol):
+    """PER y rentabilidad por dividendo (best-effort). Puede fallar; se ignora si falla."""
     url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}?modules=summaryDetail,defaultKeyStatistics"
     try:
         d = _get(url)
@@ -65,6 +78,7 @@ def yahoo_fundamentals(symbol):
         return (None, None)
 
 def fx_to_eur_series(cur):
+    """Serie de tipo de cambio CUR->EUR por fecha. EUR -> None (no hace falta)."""
     if cur == "EUR":
         return None
     series, _ = yahoo_history(f"{cur}EUR=X", "2y")
@@ -73,7 +87,10 @@ def fx_to_eur_series(cur):
         return {}
     return dict(series)
 
+# ----------------------------- utilidades cuant ------------------------------
+
 def returns(series):
+    """Rendimientos simples de una lista [(fecha, precio)] ordenada."""
     rs = []
     for i in range(1, len(series)):
         p0 = series[i - 1][1]
@@ -94,6 +111,7 @@ def pearson(xs, ys):
     return sxy / math.sqrt(sx * sy)
 
 def xirr(cashflows):
+    """cashflows: lista [(fecha_date, importe)] (negativos = aportacion)."""
     if len(cashflows) < 2:
         return None
     t0 = cashflows[0][0]
@@ -114,7 +132,10 @@ def xirr(cashflows):
             lo, flo = mid, fm
     return (lo + hi) / 2
 
+# ----------------------------- metricas de cartera ---------------------------
+
 def portfolio_series(rets_by_id, weights):
+    """Serie de rendimientos de la cartera (pesos fijos) sobre fechas comunes."""
     ids = [i for i in rets_by_id if rets_by_id[i]]
     if not ids:
         return []
@@ -130,6 +151,7 @@ def portfolio_series(rets_by_id, weights):
     return out
 
 def risk_metrics(series_rets, rf):
+    """series_rets: lista [(fecha, r)]. Devuelve dict de metricas anualizadas."""
     rs = [r for _, r in series_rets]
     n = len(rs)
     if n < 8:
@@ -162,6 +184,7 @@ def risk_metrics(series_rets, rf):
     }
 
 def cov_matrix(rets_by_id, ids):
+    """Covarianza anualizada sobre fechas comunes + medias y vol anuales."""
     maps = {i: dict(rets_by_id[i]) for i in ids}
     common = None
     for i in ids:
@@ -219,7 +242,8 @@ def efficient_frontier(ids, mu_ann, cov, cap, rf, nsims=6000):
         if max(w) > cap:
             continue
         ret, vol = port(w)
-        samples.append({"w": w, "ret": ret, "vol": vol, "sharpe": (ret - rf) / vol if vol > 0 else -99})
+        samples.append({"w": w, "ret": ret, "vol": vol,
+                        "sharpe": (ret - rf) / vol if vol > 0 else -99})
     if not samples:
         return None
     maxs = max(samples, key=lambda p: p["sharpe"])
@@ -231,11 +255,15 @@ def efficient_frontier(ids, mu_ann, cov, cap, rf, nsims=6000):
             bins[k] = p
     line = sorted(bins.values(), key=lambda p: p["vol"])
     def pack(p):
-        return {"vol": round(p["vol"], 2), "ret": round(p["ret"], 2), "sharpe": round(p["sharpe"], 2),
+        return {"vol": round(p["vol"], 2), "ret": round(p["ret"], 2),
+                "sharpe": round(p["sharpe"], 2),
                 "weights": {ids[i]: round(p["w"][i] * 100, 1) for i in range(len(ids)) if p["w"][i] > 0.01}}
     cloud = [{"vol": round(p["vol"], 2), "ret": round(p["ret"], 2)} for p in random.sample(samples, min(1200, len(samples)))]
-    return {"cloud": cloud, "line": [{"vol": round(p["vol"], 2), "ret": round(p["ret"], 2)} for p in line],
+    return {"cloud": cloud,
+            "line": [{"vol": round(p["vol"], 2), "ret": round(p["ret"], 2)} for p in line],
             "max_sharpe": pack(maxs), "min_var": pack(minv)}
+
+# ----------------------------- principal -------------------------------------
 
 def main():
     cfg = json.load(open(CFG, encoding="utf-8"))
@@ -247,9 +275,9 @@ def main():
     assets = cfg["assets"]
     txns = cfg["transactions"]
 
-    prices_eur = {}
-    last_price = {}
-    fundamentals = {}
+    prices_eur = {}      # id -> serie de precios [(fecha, precio)] para RENDIMIENTOS (los % son iguales en cualquier divisa)
+    last_price = {}      # id -> precio actual en EUR (para el valor)
+    fundamentals = {}    # id -> {pe, ytd, dy}
 
     def to_eur_price(p, cur):
         if p is None:
@@ -258,12 +286,14 @@ def main():
             return p
         fx = fx_to_eur_series(cur)
         if fx:
-            rate = fx[sorted(fx)[-1]]
+            rate = fx[sorted(fx)[-1]]  # ultimo tipo de cambio disponible
             return p * rate
         return p
 
     for a in assets:
         series, cur = yahoo_history(a["symbol"], rng)
+        # ---- precio actual en EUR ----
+        # Si hay price_symbol (p.ej. cotizacion en EUR), el valor sale de ahi; si no, del ultimo cierre del historico.
         cur_price = None
         if a.get("price_symbol"):
             pq, pcur = yahoo_quote(a["price_symbol"])
@@ -277,6 +307,7 @@ def main():
                 WARN.append(f"{a['name']}: sin precio de mercado; uso ultimo precio de compra ({cur_price}).")
         if cur_price is not None:
             last_price[a["id"]] = cur_price
+        # ---- serie historica para metricas (en bruto: los rendimientos % no dependen de la divisa) ----
         if series:
             prices_eur[a["id"]] = series
             ytd = None
@@ -291,6 +322,7 @@ def main():
         else:
             fundamentals[a["id"]] = {"pe": None, "ytd": None, "dy": None}
 
+    # ---- holdings ----
     holdings = []
     total_val = total_inv = 0.0
     for a in assets:
@@ -311,6 +343,7 @@ def main():
 
     weights = {h["id"]: (h["value"] / total_val if total_val else 0) for h in holdings}
 
+    # ---- series de rendimientos y metricas ----
     rets_by_id = {i: returns(prices_eur[i]) for i in prices_eur}
     ids = [i for i in rets_by_id if len(rets_by_id[i]) >= 8]
     port = portfolio_series(rets_by_id, weights)
@@ -323,12 +356,14 @@ def main():
         mu_ann, cov, corr, ncommon = cov_matrix(rets_by_id, ids)
         correlations = {"ids": ids, "matrix": [[corr[a][b] for b in ids] for a in ids], "n": ncommon}
         risk_contrib = risk_contributions(ids, weights, cov)
+        # vol historica por activo
         for h in holdings:
             if h["id"] in ids:
                 h["ann_vol"] = round(math.sqrt(cov[h["id"]][h["id"]]) * 100, 1)
                 h["risk_contrib"] = risk_contrib.get(h["id"], 0)
         if len(ids) >= 2:
             frontier = efficient_frontier(ids, mu_ann, cov, cap, rf)
+            # puntos cartera actual y objetivo en el plano riesgo-retorno
             def pt(wmap):
                 ret = sum(wmap.get(i, 0) * mu_ann[i] for i in ids) * 100
                 var = sum(wmap.get(i, 0) * wmap.get(j, 0) * cov[i][j] for i in ids for j in ids)
@@ -339,17 +374,63 @@ def main():
             frontier["target"] = pt(twmap)
             frontier["assets"] = [{"id": i, "vol": round(math.sqrt(cov[i][i]) * 100, 1), "ret": round(mu_ann[i] * 100, 1)} for i in ids]
 
+    # ---- indice de evolucion (asignacion actual, base 100) ----
     idx, v = [], 100.0
     for day, r in port:
         v *= (1 + r)
         idx.append({"date": day, "index": round(v, 2)})
 
+    # ---- evolucion real en euros desde la primera compra ----
+    # Para cada dia desde la primera transaccion, calcula el valor real de la cartera
+    real_index = []
+    if prices_eur and txns:
+        first_date = min(t["date"] for t in txns)
+        # construir mapa de precio diario por activo (serie bruta, sin convertir)
+        price_maps = {}
+        for aid, series in prices_eur.items():
+            price_maps[aid] = dict(series)
+        # precio actual en EUR por unidad para escalar la serie bruta
+        scale = {}
+        for h in holdings:
+            if h["id"] in price_maps and h["price"] > 0:
+                last_raw = price_maps[h["id"]][sorted(price_maps[h["id"]])[-1]]
+                scale[h["id"]] = h["price"] / last_raw if last_raw else 1.0
+        # fechas comunes desde first_date
+        all_dates = sorted(set(d for aid in price_maps for d in price_maps[aid] if d >= first_date))
+        # unidades acumuladas por activo (compras anteriores a cada fecha)
+        def units_at(aid, before_date):
+            return sum(
+                (t["amount"] - t.get("fee", 0)) / t["price"]
+                for t in txns
+                if t["asset"] == aid and t["price"] > 0 and t["date"] <= before_date
+            )
+        for day in all_dates:
+            val_day = 0.0
+            for h in holdings:
+                aid = h["id"]
+                if aid not in price_maps or aid not in scale:
+                    continue
+                raw_price = price_maps[aid].get(day)
+                if raw_price is None:
+                    # buscar precio mas cercano anterior
+                    prev = [p for d2, p in sorted(price_maps[aid].items()) if d2 <= day]
+                    raw_price = prev[-1] if prev else None
+                if raw_price is None:
+                    continue
+                eur_price = raw_price * scale[aid]
+                u = units_at(aid, day)
+                val_day += u * eur_price
+            if val_day > 0:
+                real_index.append({"date": day, "value": round(val_day, 2)})
+
+    # ---- TIR (money-weighted) ----
     cfs = [(datetime.date.fromisoformat(t["date"]), -t["amount"]) for t in txns]
     cfs.sort()
     if total_val > 0:
         cfs.append((datetime.date.today(), total_val))
     tir = xirr(cfs)
 
+    # ---- oportunidades: valoracion + encaje ----
     opportunities = []
     if frontier and ids:
         mu_ann2, cov2, _, _ = cov_matrix(rets_by_id, ids)
@@ -376,7 +457,8 @@ def main():
                     c = cov2[a["id"]][b["id"]] / math.sqrt(va * vb) if va > 0 and vb > 0 else 0
                     avg_corr += (b.get("target", 0) / tt) * c
                 avg_corr = round(avg_corr, 2)
-            opportunities.append({"id": a["id"], "name": a["name"], "pe": pe, "ytd": f.get("ytd"), "bucket": bucket, "avg_corr": avg_corr})
+            opportunities.append({"id": a["id"], "name": a["name"], "pe": pe, "ytd": f.get("ytd"),
+                                  "bucket": bucket, "avg_corr": avg_corr})
 
     out = {
         "updated": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -386,14 +468,20 @@ def main():
                    "pnl": round(total_val - total_inv, 2),
                    "pnl_pct": round((total_val - total_inv) / total_inv * 100, 1) if total_inv else 0,
                    "xirr": round(tir * 100, 1) if tir is not None else None},
-        "metrics": metrics, "holdings": holdings, "index": idx,
-        "correlations": correlations, "frontier": frontier,
-        "opportunities": opportunities, "warnings": WARN,
+        "metrics": metrics,
+        "holdings": holdings,
+        "index": idx,
+        "real_index": real_index,
+        "correlations": correlations,
+        "frontier": frontier,
+        "opportunities": opportunities,
+        "warnings": WARN,
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as fh:
         json.dump(out, fh, ensure_ascii=False, indent=2)
     print(f"OK. Valor {out['totals']['value']} EUR. Avisos: {len(WARN)}")
+
 
 if __name__ == "__main__":
     main()
